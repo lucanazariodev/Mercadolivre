@@ -1,211 +1,197 @@
 import streamlit as st
 import requests
 import pandas as pd
-import time 
+import time
+from bs4 import BeautifulSoup
 from urllib.parse import quote_plus
+import numpy as np 
+import re 
 
-# A URL base e o site para o Mercado Livre (Brasil)
-ML_SITE = "MLB"
-ML_API_BASE = "https://api.mercadolibre.com"
+# Constantes de configuração
+DELAY_SECONDS = 3.0 
+HEADERS = {
+    # Headers para simular um navegador real (crucial para o ML)
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/110.0.0.0 Safari/537.36",
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+}
 
-class MercadoLivreSearcher:
-    """
-    Classe para encapsular a lógica de busca e paginação na API do Mercado Livre.
-    """
-    def __init__(self, access_token=None):
-        """
-        Configura os cabeçalhos com User-Agent e token condicional.
-        """
-        self.headers = {
-            'Content-Type': 'application/json',
-            'User-Agent': 'ML-Streamlit-Analysis-App/1.0 (Contato: usuario)' 
-        }
-        
-        if access_token:
-             self.headers['Authorization'] = f'Bearer {access_token}'
+# ================= 1. Função de Web Scraping Principal =================
+@st.cache_data(ttl=600) 
+def scrape_mercado_livre(search_term, pages=1, sort_order="relevance"):
+    all_results = []
+    search_path = quote_plus(search_term) 
     
-    def _fetch_page(self, query: str, offset: int = 0) -> dict:
-        """Faz a chamada à API do Mercado Livre para uma página específica."""
-        safe_query = quote_plus(query)
-        url = f"{ML_API_BASE}/sites/{ML_SITE}/search?q={safe_query}&offset={offset}"
-        
-        try:
-            response = requests.get(url, headers=self.headers, timeout=15)
-            response.raise_for_status() 
-            return response.json()
-        except requests.exceptions.RequestException as e:
-            st.error(f"Erro na requisição à API do Mercado Livre: {e}")
-            return None
+    # 🚨 Lógica de Ordenação: Adiciona o parâmetro de ordenação na URL
+    sort_path = ""
+    if sort_order == "lowest_price":
+        # Parâmetro ML para ordenar por preço crescente
+        sort_path = "_OrderId_PRICE*ASC" 
+    # Para "relevance" (relevância), a URL fica sem o parâmetro, usando o padrão do ML
 
-    # st.cache_data NÃO DEVE ser usado em um método de classe, pois o Streamlit
-    # não consegue fazer o hash do argumento 'self' de forma confiável.
-    # Já corrigido para '_self', mas vamos encapsular o cache_data em um helper
-    # que usa o 'searcher' como um argumento de estado.
-    
-    # REMOÇÃO DO CACHE DA CLASSE PARA EVITAR COMPORTAMENTO INESPERADO COM O TOKEN
-    def search(self, query: str, limit: int, sort_type: str) -> pd.DataFrame:
-        """
-        Realiza a busca completa e retorna o Top N de resultados ordenados.
-        """
-        all_results = []
-        offset = 0
-        MAX_RESULTS_ML = 1000
-
-        with st.spinner(f"Buscando até {MAX_RESULTS_ML} itens para '{query}'..."):
+    with st.spinner(f"Buscando {pages} páginas para '{search_term}' (Classificação: {sort_order})..."):
+        for page_num in range(pages):
+            offset = page_num * 48 + 1
+            # Constrói a URL com o offset (página) e o parâmetro de ordenação
+            url = f"https://lista.mercadolivre.com.br/{search_path}_Desde_{offset}{sort_path}"
             
-            while offset < MAX_RESULTS_ML: 
-                data = self._fetch_page(query, offset)
+            try:
+                r = requests.get(url, headers=HEADERS, timeout=20)
                 
-                if data is None:
+                if r.status_code == 403:
+                    st.error(f"Erro 403 na página {page_num + 1}: Seu IP de servidor está bloqueado.")
+                    return pd.DataFrame()
+                
+                r.raise_for_status()
+
+                soup = BeautifulSoup(r.text, "html.parser")
+                items = soup.select("li.ui-search-layout__item")
+
+                if not items:
+                    if page_num == 0:
+                        st.warning("Nenhum item encontrado na primeira página.")
                     break
+
+                for item in items:
+                    title, link, price_str, shipping_gratis, shipping_full, sold, item_id = "N/A", "N/A", "N/A", "Não", "Não", "N/A", "N/A"
+                    
+                    # 1. Link, Título e ID MLB (Focado nos seletores poly-component/ui-search)
+                    link_el = item.select_one("a.poly-component__title, a.ui-search-link")
+                    
+                    if link_el and 'href' in link_el.attrs:
+                        link = link_el['href']
+                        title = link_el.text.strip()
+                        
+                        # ID MLB
+                        match = re.search(r'MLB-(\d+)', link)
+                        if match:
+                            item_id = match.group(1)
+                        else:
+                            item_id = item.get('data-item-id', 'N/A')
+                        
+                    # 2. Preço
+                    price_full_el = item.select_one("span.andes-money-amount span.andes-money-amount__fraction")
+                    price_cents_el = item.select_one("span.andes-money-amount span.andes-money-amount__cents")
+                    
+                    if price_full_el:
+                        price_str = price_full_el.text.strip()
+                        if price_cents_el:
+                            price_str += f",{price_cents_el.text.strip()}"
+                        price_str = price_str.replace('R$', '').strip()
+                        
+                    # 3. Frete Grátis
+                    shipping_el = item.select_one("p.ui-search-item__shipping-method")
+                    if shipping_el and "Grátis" in shipping_el.text:
+                        shipping_gratis = "Sim"
+                    
+                    # 4. Frete FULL (CORREÇÃO FINAL: busca pelo texto e classes de fulfillment)
+                    # Verifica se existe algum selo de fulfillment OU se a palavra "FULL" está presente
+                    full_el = item.select_one("span.ui-search-item__fulfillment-label, span.ui-search-item__fulfillment-label__text")
+                    if full_el and "full" in full_el.text.lower():
+                        shipping_full = "Sim"
+                    # Fallback para busca por texto
+                    elif item.find(string=re.compile(r"FULL", re.IGNORECASE)):
+                         shipping_full = "Sim"
+                    
+                    # 5. Vendidos (Lógica de extração exata)
+                    sold = "N/A"
+                    all_poly_labels = item.select("span.poly-phrase-label")
+                    for label in all_poly_labels:
+                        if "vendidos" in label.text.lower():
+                            sold_text = label.text.strip()
+                            if '|' in sold_text:
+                                # Pega o texto após o '|' e faz a limpeza
+                                sold = sold_text.split('|')[-1].replace(' vendidos', '').strip()
+                            else:
+                                sold = sold_text.replace(' vendidos', '').strip()
+                            break
+                    
+                    all_results.append({
+                        "Nome": title,
+                        "Preço": price_str,
+                        "Vendidos": sold,
+                        "Frete grátis": shipping_gratis,
+                        "FULL": shipping_full,
+                        "ID MLB": item_id,
+                        "Página": page_num + 1, # Adicionando a página
+                        "Link": link,
+                    })
                 
-                # Se for o JSON de tracking/log, ele não tem 'results' e o loop deve parar
-                if not data.get('results'):
-                    st.warning("A busca parou. Resposta da API não contém resultados (pode ser rate-limiting ou bloqueio).")
-                    break
+                st.info(f"Página {page_num + 1} de {pages} processada. Aguardando {DELAY_SECONDS}s...")
+                time.sleep(DELAY_SECONDS)
 
-                all_results.extend(data['results'])
-                total_items = data['paging'].get('total', 0)
-                
-                offset += len(data['results'])
-                
-                if offset >= total_items or offset >= MAX_RESULTS_ML:
-                    break
-                
-                # AUMENTO DO DELAY: 1.0 segundo entre as requisições de página
-                if offset < MAX_RESULTS_ML:
-                    time.sleep(1.0) 
+            except requests.exceptions.RequestException as e:
+                st.error(f"Erro de conexão na página {page_num + 1}: {e}")
+                break
 
-        if not all_results:
-            return pd.DataFrame()
+    return pd.DataFrame(all_results)
 
-        # === Processamento, Filtragem e Ordenação com Pandas ===
-        df = pd.DataFrame(all_results)
-        df_filtered = df[df['condition'] == 'new'].copy()
-        
-        if df_filtered.empty:
-            st.warning("Nenhum produto NOVO encontrado. O filtro 'new' foi aplicado.")
-            return pd.DataFrame()
-        
-        # Configuração das colunas de saída
-        if sort_type == 'price':
-            cols_to_keep = ['id', 'title', 'price', 'permalink'] 
-            df_final = df_filtered[cols_to_keep]
-            sort_order = True 
-            df_final.rename(columns={'price': 'Preço'}, inplace=True)
-            sort_column_name = 'Preço'
-        else:
-            cols_to_keep = ['id', 'title', 'sold_quantity', 'permalink'] 
-            df_final = df_filtered[cols_to_keep]
-            sort_order = False 
-            df_final.rename(columns={'sold_quantity': 'Vendas'}, inplace=True)
-            sort_column_name = 'Vendas'
-            
-        # Limpeza e Renomeação Final
-        df_final['id'] = df_final['id'].astype(str).str.replace('MLB', '')
-        df_final.rename(columns={
-            'id': 'ID_MLB',
-            'permalink': 'Link',
-            'title': 'Título'
-        }, inplace=True)
-
-        df_sorted = df_final.sort_values(by=sort_column_name, ascending=sort_order).head(limit)
-        
-        return df_sorted
-
-# O Streamlit lida melhor com cache em funções fora da classe
-@st.cache_data(ttl=3600)
-def cached_search(query, limit, sort_type, access_token_state):
-    """Função wrapper para usar o cache do Streamlit de forma segura."""
-    # O token é passado como estado para forçar o cache a invalidar se o token mudar
-    searcher = MercadoLivreSearcher(access_token=access_token_state)
-    return searcher.search(query, limit, sort_type)
-
-# --- Aplicação Streamlit Principal ---
+# ================= 2. Interface Streamlit =================
 def main():
-    st.set_page_config(layout="wide", page_title="Análise Mercado Livre")
-    
-    st.title("Ferramenta de Análise do Mercado Livre")
-    st.markdown("Implementação em Python/Streamlit do seu código VBA para buscar Top N por Preço ou Vendas (Apenas produtos Novos).")
+    st.set_page_config(layout="wide", page_title="Análise Mercado Livre (Scraping)")
+    st.title("Ferramenta de Análise do Mercado Livre (Scraping)")
+    st.markdown("Busca sequencial direta no HTML do Mercado Livre. **Não usa API oficial.**")
 
-    st.sidebar.header("Configuração de Credenciais")
-    st.sidebar.info("A busca de produtos (`/search`) é pública, mas um token válido é essencial para evitar bloqueios.")
+    st.sidebar.header("Configuração")
+    st.sidebar.warning("O delay de 3 segundos está ativo para reduzir o risco de bloqueio.")
+
+    search_term = st.text_input("Termo de Busca:", value="kit 3 calças jeans masculina")
+    num_pages = st.number_input("Quantas páginas buscar?", min_value=1, max_value=10, value=1)
     
-    ACCESS_TOKEN = st.sidebar.text_input(
-        "Access Token (Suas últimas credenciais válidas):", 
-        type="password",
-        # Use o token como uma chave de estado para forçar a função cacheada a reexecutar
-        key='access_token_input'
+    # 🚨 Opção de Classificação (Novo)
+    sort_option = st.selectbox(
+        "Classificar Resultados por:",
+        ("Mais Relevante", "Menor Preço")
     )
 
-    # Abas para separar as duas funcionalidades
-    tab1, tab2 = st.tabs(["Menor Preço", "Maior Venda"])
+    # Mapeia a opção do usuário para o parâmetro interno
+    sort_param = "relevance"
+    if sort_option == "Menor Preço":
+        sort_param = "lowest_price"
+    # Note: A classificação por preço é feita pelo ML na URL, mas a ordenação final na tabela será a mesma.
 
-    # === Lógica para Menor Preço ===
-    with tab1:
-        st.header("Menor Preço")
-        query_price = st.text_input(
-            "Termo de Busca:", 
-            "placa de video rtx 3060",
-            key='query_price'
-        )
-        limit_price = st.number_input(
-            "Número de Resultados (N):", 
-            min_value=1, max_value=200, value=20, step=1,
-            key='limit_price'
-        )
+    if st.button("Buscar Anúncios (Scraping)"):
+        if not search_term:
+            st.warning("Por favor, digite um termo de busca.")
+            return
 
-        if st.button("Buscar Top N por Menor Preço", key='btn_price') and query_price:
-            
-            # Chama a função cacheada, passando o token como argumento de estado
-            top_menor_preco = cached_search(
-                query=query_price, 
-                limit=limit_price, 
-                sort_type='price',
-                access_token_state=ACCESS_TOKEN
-            )
-            
-            if not top_menor_preco.empty:
-                st.success(f"Top {limit_price} produtos Novos, ordenados por Menor Preço:")
-                
-                display_df = top_menor_preco[['ID_MLB', 'Link', 'Preço', 'Título']].copy()
-                
-                display_df['Preço'] = display_df['Preço'].apply(lambda x: f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-                
-                st.dataframe(display_df, use_container_width=True, hide_index=True)
-            
+        df_results = scrape_mercado_livre(search_term, pages=num_pages, sort_order=sort_param)
 
-    # === Lógica para Maior Venda ===
-    with tab2:
-        st.header("Maior Venda")
-        query_sales = st.text_input(
-            "Termo de Busca:", 
-            "cadeira gamer",
-            key='query_sales'
-        )
-        limit_sales = st.number_input(
-            "Número de Resultados (N):", 
-            min_value=1, max_value=200, value=20, step=1,
-            key='limit_sales'
-        )
+        if not df_results.empty:
+            st.success(f"Encontrados {len(df_results)} anúncios nas primeiras {num_pages} páginas.")
+            
+            # --- Tratamento de Preço e Ordenação (Interna para garantir consistência) ---
+            try:
+                # 1. Limpa o Preço
+                df_results['Preço Limpo'] = (
+                    df_results['Preço'].astype(str)
+                    .str.replace('.', '', regex=False)
+                    .str.replace(',', '.', regex=False)
+                    .str.strip()
+                )
+                
+                # 2. Converte para float
+                df_results['Preço Limpo'] = pd.to_numeric(df_results['Preço Limpo'], errors='coerce')
+                
+                # 3. Ordena (Usando a coluna limpa para ordenação, que já foi solicitada na URL)
+                if sort_option == "Menor Preço":
+                    # Ordena internamente por preço para exibir corretamente (o ML faz isso, mas garantimos)
+                    df_sorted = df_results.sort_values(by='Preço Limpo', na_position='last', ascending=True)
+                else:
+                    # Se for 'Mais Relevante', mantém a ordem em que o ML retornou os dados
+                    df_sorted = df_results.copy()
+                
+                st.subheader(f"Resultados Encontrados ({sort_option}):")
+                # Exibe a coluna Página e FULL na tabela
+                st.dataframe(df_sorted[['Nome', 'Preço', 'Vendidos', 'Frete grátis', 'FULL', 'ID MLB', 'Página', 'Link']].head(num_pages * 48), use_container_width=True, hide_index=True)
+                
+            except Exception as e:
+                st.error(f"Erro durante a ordenação ou limpeza dos dados: {e}")
+                st.dataframe(df_results[['Nome', 'Preço', 'Vendidos', 'Frete grátis', 'FULL', 'ID MLB', 'Página', 'Link']], use_container_width=True, hide_index=True)
+        
+        else:
+            st.warning("Nenhum resultado encontrado. Tente um termo diferente.")
 
-        if st.button("Buscar Top N por Maior Venda", key='btn_sales') and query_sales:
-            
-            # Chama a função cacheada, passando o token como argumento de estado
-            top_maior_venda = cached_search(
-                query=query_sales, 
-                limit=limit_sales, 
-                sort_type='sold_quantity',
-                access_token_state=ACCESS_TOKEN
-            )
-            
-            if not top_maior_venda.empty:
-                st.success(f"Top {limit_sales} produtos Novos, ordenados por Maior Vendas:")
-                
-                display_df = top_maior_venda[['ID_MLB', 'Link', 'Vendas', 'Título']].copy()
-                display_df['Vendas'] = display_df['Vendas'].astype(int)
-                
-                st.dataframe(display_df, use_container_width=True, hide_index=True)
-                
 if __name__ == '__main__':
     main()
