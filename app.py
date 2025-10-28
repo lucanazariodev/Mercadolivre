@@ -1,4 +1,3 @@
-# CÓDIGO FINAL SEM AUTENTICAÇÃO (Para colar no app.py)
 import streamlit as st
 import requests
 import pandas as pd
@@ -6,12 +5,12 @@ from datetime import datetime
 from urllib.parse import quote_plus
 import time
 
-# --- SEM AUTENTICAÇÃO ---
-# Removemos o Access Token e as credenciais.
-# O acesso é tratado como totalmente público para tentar contornar o 403.
-# ------------------------
+# --- AUTENTICAÇÃO DO MERCADO LIVRE ---
+# Token mais recente (Válido por 6 horas)
+ACCESS_TOKEN = "APP_USR-2395996998241392-102721-b5a386a938e4b305786ec0a9eca50ef6-1965939634" 
+# -----------------------------------
 
-# Configuração de Headers: Simulação de navegador mais detalhada
+# Configuração de Headers: Simulação de navegador
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36'
 }
@@ -44,29 +43,29 @@ if st.button("🔍 Buscar anúncios"):
             # Codifica o termo de busca para ser seguro em URL
             q = quote_plus(termo)
             
-            # 1. Busca Principal: URL totalmente pública (SEM TOKEN)
-            url_search = f"https://api.mercadolibre.com/sites/MLB/search?q={q}&limit={limite}&sort={sort_param}"
+            # 1. Busca Principal: PASSANDO O TOKEN DIRETAMENTE NA URL
+            url_search = f"https://api.mercadolibre.com/sites/MLB/search?q={q}&limit={limite}&sort={sort_param}&access_token={ACCESS_TOKEN}"
             
             try:
                 res = requests.get(url_search, headers=HEADERS, timeout=15)
                 res.raise_for_status() 
                 dados = res.json()
             except Exception as e:
-                # Se falhar, a conclusão é que o ambiente local está bloqueado.
+                # O erro 403 aqui é de bloqueio de ambiente/rede.
                 st.error(f"Erro ao acessar a API: {e}")
-                st.info("O bloqueio é no nível da rede/IP. A única solução é o deploy na nuvem.")
+                st.info("O bloqueio é severo. O código está correto, mas a rede está sendo rejeitada.")
                 st.stop()
 
             resultados = []
             
-            # 2. Busca Detalhada para cada item: URL totalmente pública (SEM TOKEN)
+            # 2. Busca Detalhada para cada item: PASSANDO O TOKEN DIRETAMENTE NA URL
             for item in dados.get("results", []):
                 try:
                     # Atraso para evitar ser banido durante o loop
                     time.sleep(1) 
                     
-                    detalhe_url = f"https://api.mercadolibre.com/items/{item['id']}" # SEM TOKEN AQUI
-                    detalhe = requests.get(detalhe_url, headers=HEADERS, timeout=10).json() # LINHA 68 CORRIGIDA
+                    detalhe_url = f"https://api.mercadolibre.com/items/{item['id']}?access_token={ACCESS_TOKEN}"
+                    detalhe = requests.get(detalhe_url, headers=HEADERS, timeout=10).json()
                     date_created = detalhe.get("date_created", "")
                 except:
                     date_created = ""
@@ -94,7 +93,7 @@ if st.button("🔍 Buscar anúncios"):
 
                 with open(nome_arquivo, "rb") as f:
                     st.download_button(
-                        label="⬇️ Baixar relatório em Excel",
+                        label=⬇️ Baixar relatório em Excel",
                         data=f,
                         file_name=nome_arquivo,
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
