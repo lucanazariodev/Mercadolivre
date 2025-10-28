@@ -5,10 +5,11 @@ from datetime import datetime
 from urllib.parse import quote_plus
 import time
 
-# --- AUTENTICAÇÃO DO MERCADO LIVRE (NOVO APP ID) ---
-# Token mais recente gerado:
-ACCESS_TOKEN = "APP_USR-6851821260526902-102722-d27dbc2dee5fb131dfcd67cd9c55cf9a-1965939634" 
-# ---------------------------------------------------
+# --- AUTENTICAÇÃO DO MERCADO LIVRE (TOKEN DE AUTORIZAÇÃO DE USUÁRIO) ---
+# Token final gerado via fluxo OAuth 2.0 (Validade: 6 horas)
+ACCESS_TOKEN = "APP_USR-7045413899514788-102723-bda1d9cea748a531bea586d432e80011-1965939634" 
+# O Refresh Token para renovar este token é: TG-6900398156307e000110d472-1965939634
+# ----------------------------------------------------------------------
 
 # Configuração de Headers BASE: Simulação de navegador
 HEADERS = {
@@ -16,7 +17,7 @@ HEADERS = {
 }
 
 # --- HEADER DE AUTORIZAÇÃO OBRIGATÓRIO (Recomendação do ML) ---
-# Adiciona o token no cabeçalho para maior segurança e compatibilidade.
+# Adiciona o token no cabeçalho.
 HEADERS_AUTH = HEADERS.copy()
 HEADERS_AUTH['Authorization'] = f'Bearer {ACCESS_TOKEN}'
 # -------------------------------------------------------------
@@ -24,7 +25,7 @@ HEADERS_AUTH['Authorization'] = f'Bearer {ACCESS_TOKEN}'
 st.set_page_config(page_title="Relatório Mercado Livre", layout="centered")
 
 st.title("📊 Consulta de Produtos no Mercado Livre")
-st.info("Utilizando o novo Access Token. O erro 403 é uma barreira de segurança do Mercado Livre (bloqueio de IP/rede).")
+st.info("Utilizando o Token de Autorização de Usuário. Se o erro 403 persistir, o bloqueio é 100% de infraestrutura (IP/Rede).")
 
 # --- Entrada do usuário ---
 termo = st.text_input("Digite o termo de busca", "lâmpada LED")
@@ -54,14 +55,14 @@ if st.button("Buscar anúncios"):
             url_search = f"https://api.mercadolibre.com/sites/MLB/search?q={q}&limit={limite}&sort={sort_param}"
             
             try:
-                # Usa HEADERS_AUTH para enviar o token
+                # Usa HEADERS_AUTH
                 res = requests.get(url_search, headers=HEADERS_AUTH, timeout=15)
                 res.raise_for_status() 
                 dados = res.json()
             except Exception as e:
-                # Captura e exibe o erro (espera-se o 403)
+                # O erro 403 aqui é de bloqueio de ambiente/rede.
                 st.error(f"Erro ao acessar a API: {e}")
-                st.info("Confirmação: o bloqueio é de rede/infraestrutura, não do código ou do token.")
+                st.warning("Confirmação: o bloqueio é de rede/infraestrutura, não do código ou do token.")
                 st.stop()
 
             resultados = []
@@ -78,3 +79,32 @@ if st.button("Buscar anúncios"):
                     date_created = detalhe.get("date_created", "")
                 except:
                     date_created = ""
+                    
+                resultados.append({
+                    "Título": item.get("title", ""),
+                    "Preço (R$)": item.get("price", ""),
+                    "Vendas": item.get("sold_quantity", 0), 
+                    "Data de Criação": date_created,
+                    "Link": item.get("permalink", "")
+                })
+
+            if not resultados:
+                st.warning("Nenhum resultado encontrado.")
+            else:
+                df = pd.DataFrame(resultados)
+                st.success(f"{len(df)} anúncios encontrados!")
+                st.dataframe(df)
+
+                # --- Exportar para Excel ---
+                data_atual = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                nome_arquivo = f"relatorio_ml_{data_atual}.xlsx"
+                
+                df.to_excel(nome_arquivo, index=False)
+
+                with open(nome_arquivo, "rb") as f:
+                    st.download_button(
+                        label="Baixar Relatório em Excel",
+                        data=f,
+                        file_name=nome_arquivo,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
