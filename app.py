@@ -1,3 +1,4 @@
+# CÓDIGO FINAL SEM AUTENTICAÇÃO (Para colar no app.py)
 import streamlit as st
 import requests
 import pandas as pd
@@ -5,12 +6,10 @@ from datetime import datetime
 from urllib.parse import quote_plus
 import time
 
-# --- AUTENTICAÇÃO DO MERCADO LIVRE ---
-# NOVO TOKEN GERADO EM: 2025-10-27
-# Este token é válido por 6 horas. Se o problema persistir por muito tempo,
-# você precisará gerar um novo.
-ACCESS_TOKEN = "APP_USR-2395996998241392-102721-b5a386a938e4b305786ec0a9eca50ef6-1965939634" 
-# -----------------------------------
+# --- SEM AUTENTICAÇÃO ---
+# Removemos o Access Token e as credenciais.
+# O acesso é tratado como totalmente público para tentar contornar o 403.
+# ------------------------
 
 # Configuração de Headers: Simulação de navegador mais detalhada
 HEADERS = {
@@ -45,29 +44,29 @@ if st.button("🔍 Buscar anúncios"):
             # Codifica o termo de busca para ser seguro em URL
             q = quote_plus(termo)
             
-            # 1. Busca Principal: PASSANDO O TOKEN DIRETAMENTE NA URL
-            url_search = f"https://api.mercadolibre.com/sites/MLB/search?q={q}&limit={limite}&sort={sort_param}&access_token={ACCESS_TOKEN}"
+            # 1. Busca Principal: URL totalmente pública (SEM TOKEN)
+            url_search = f"https://api.mercadolibre.com/sites/MLB/search?q={q}&limit={limite}&sort={sort_param}"
             
             try:
                 res = requests.get(url_search, headers=HEADERS, timeout=15)
                 res.raise_for_status() 
                 dados = res.json()
             except Exception as e:
-                # O erro 403 aqui é de bloqueio de ambiente/rede.
+                # Se falhar, a conclusão é que o ambiente local está bloqueado.
                 st.error(f"Erro ao acessar a API: {e}")
-                st.info("O bloqueio é severo. A próxima etapa é fazer o deploy na nuvem.")
+                st.info("O bloqueio é no nível da rede/IP. A única solução é o deploy na nuvem.")
                 st.stop()
 
             resultados = []
             
-            # 2. Busca Detalhada para cada item: PASSANDO O TOKEN DIRETAMENTE NA URL
+            # 2. Busca Detalhada para cada item: URL totalmente pública (SEM TOKEN)
             for item in dados.get("results", []):
                 try:
                     # Atraso para evitar ser banido durante o loop
                     time.sleep(1) 
                     
-                    detalhe_url = f"https://api.mercadolibre.com/items/{item['id']}?access_token={ACCESS_TOKEN}"
-                    detalhe = requests.get(detalhe_url, headers=HEADERS, timeout=10).json()
+                    detalhe_url = f"https://api.mercadolibre.com/items/{item['id']}" # SEM TOKEN AQUI
+                    detalhe = requests.get(detalhe_url, headers=HEADERS, timeout=10).json() # LINHA 68 CORRIGIDA
                     date_created = detalhe.get("date_created", "")
                 except:
                     date_created = ""
@@ -91,7 +90,6 @@ if st.button("🔍 Buscar anúncios"):
                 data_atual = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
                 nome_arquivo = f"relatorio_ml_{data_atual}.xlsx"
                 
-                # Salva o arquivo na mesma pasta do app.py
                 df.to_excel(nome_arquivo, index=False)
 
                 with open(nome_arquivo, "rb") as f:
