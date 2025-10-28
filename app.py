@@ -10,10 +10,16 @@ import time
 ACCESS_TOKEN = "APP_USR-2395996998241392-102721-b5a386a938e4b305786ec0a9eca50ef6-1965939634" 
 # -----------------------------------
 
-# Configuração de Headers: Simulação de navegador
+# Configuração de Headers BASE: Simulação de navegador
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36'
 }
+
+# --- NOVO: HEADER DE AUTORIZAÇÃO OBRIGATÓRIO ---
+# Adiciona o token no cabeçalho, conforme documentação do ML.
+HEADERS_AUTH = HEADERS.copy()
+HEADERS_AUTH['Authorization'] = f'Bearer {ACCESS_TOKEN}'
+# -----------------------------------------------
 
 st.set_page_config(page_title="Relatório Mercado Livre", layout="centered")
 
@@ -43,29 +49,31 @@ if st.button("🔍 Buscar anúncios"):
             # Codifica o termo de busca para ser seguro em URL
             q = quote_plus(termo)
             
-            # 1. Busca Principal: PASSANDO O TOKEN DIRETAMENTE NA URL
-            url_search = f"https://api.mercadolibre.com/sites/MLB/search?q={q}&limit={limite}&sort={sort_param}&access_token={ACCESS_TOKEN}"
+            # 1. Busca Principal: TOKEN AGORA ESTÁ NO HEADER (HEADERS_AUTH)
+            url_search = f"https://api.mercadolibre.com/sites/MLB/search?q={q}&limit={limite}&sort={sort_param}"
             
             try:
-                res = requests.get(url_search, headers=HEADERS, timeout=15)
+                # Usa HEADERS_AUTH, sem token na URL
+                res = requests.get(url_search, headers=HEADERS_AUTH, timeout=15)
                 res.raise_for_status() 
                 dados = res.json()
             except Exception as e:
                 # O erro 403 aqui é de bloqueio de ambiente/rede.
                 st.error(f"Erro ao acessar a API: {e}")
-                st.info("O bloqueio é severo. O código está correto, mas a rede está sendo rejeitada.")
+                st.info("O bloqueio é severo. O código agora segue a recomendação de Header.")
                 st.stop()
 
             resultados = []
             
-            # 2. Busca Detalhada para cada item: PASSANDO O TOKEN DIRETAMENTE NA URL
+            # 2. Busca Detalhada para cada item: TOKEN AGORA ESTÁ NO HEADER
             for item in dados.get("results", []):
                 try:
                     # Atraso para evitar ser banido durante o loop
                     time.sleep(1) 
                     
-                    detalhe_url = f"https://api.mercadolibre.com/items/{item['id']}?access_token={ACCESS_TOKEN}"
-                    detalhe = requests.get(detalhe_url, headers=HEADERS, timeout=10).json()
+                    detalhe_url = f"https://api.mercadolibre.com/items/{item['id']}" # SEM TOKEN NA URL AQUI
+                    # Usa HEADERS_AUTH
+                    detalhe = requests.get(detalhe_url, headers=HEADERS_AUTH, timeout=10).json()
                     date_created = detalhe.get("date_created", "")
                 except:
                     date_created = ""
@@ -93,7 +101,7 @@ if st.button("🔍 Buscar anúncios"):
 
                 with open(nome_arquivo, "rb") as f:
                     st.download_button(
-                        label= "Baixar relatório em Excel",
+                        label="Baixar relatório em Excel",
                         data=f,
                         file_name=nome_arquivo,
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
