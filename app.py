@@ -93,7 +93,7 @@ if st.button("🔍 Buscar anúncios"):
 
                 with open(nome_arquivo, "rb") as f:
                     st.download_button(
-                        label=⬇️ Baixar relatório em Excel",
+                        label= "Baixar relatório em Excel",
                         data=f,
                         file_name=nome_arquivo,
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
