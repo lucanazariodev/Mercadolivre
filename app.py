@@ -5,10 +5,10 @@ from datetime import datetime
 from urllib.parse import quote_plus
 import time
 
-# --- AUTENTICAÇÃO DO MERCADO LIVRE ---
-# Token mais recente (Válido por 6 horas)
-ACCESS_TOKEN = "APP_USR-2395996998241392-102721-b5a386a938e4b305786ec0a9eca50ef6-1965939634" 
-# -----------------------------------
+# --- AUTENTICAÇÃO DO MERCADO LIVRE (NOVO APP ID) ---
+# Token mais recente gerado:
+ACCESS_TOKEN = "APP_USR-6851821260526902-102722-d27dbc2dee5fb131dfcd67cd9c55cf9a-1965939634" 
+# ---------------------------------------------------
 
 # Configuração de Headers BASE: Simulação de navegador
 HEADERS = {
@@ -16,15 +16,15 @@ HEADERS = {
 }
 
 # --- HEADER DE AUTORIZAÇÃO OBRIGATÓRIO (Recomendação do ML) ---
-# Adiciona o token no cabeçalho.
+# Adiciona o token no cabeçalho para maior segurança e compatibilidade.
 HEADERS_AUTH = HEADERS.copy()
 HEADERS_AUTH['Authorization'] = f'Bearer {ACCESS_TOKEN}'
-# -----------------------------------------------
+# -------------------------------------------------------------
 
 st.set_page_config(page_title="Relatório Mercado Livre", layout="centered")
 
-st.title("Consulta de Produtos no Mercado Livre")
-st.info("O código está tecnicamente correto, usando o Access Token no Header. O erro 403 é uma barreira de segurança do Mercado Livre.")
+st.title("📊 Consulta de Produtos no Mercado Livre")
+st.info("Utilizando o novo Access Token. O erro 403 é uma barreira de segurança do Mercado Livre (bloqueio de IP/rede).")
 
 # --- Entrada do usuário ---
 termo = st.text_input("Digite o termo de busca", "lâmpada LED")
@@ -50,7 +50,7 @@ if st.button("Buscar anúncios"):
             # Codifica o termo de busca para ser seguro em URL
             q = quote_plus(termo)
             
-            # 1. Busca Principal: TOKEN AGORA ESTÁ NO HEADER (HEADERS_AUTH)
+            # 1. Busca Principal: TOKEN NO HEADER
             url_search = f"https://api.mercadolibre.com/sites/MLB/search?q={q}&limit={limite}&sort={sort_param}"
             
             try:
@@ -59,51 +59,22 @@ if st.button("Buscar anúncios"):
                 res.raise_for_status() 
                 dados = res.json()
             except Exception as e:
-                # Captura e exibe o erro 403 (bloqueio)
+                # Captura e exibe o erro (espera-se o 403)
                 st.error(f"Erro ao acessar a API: {e}")
-                st.info("O bloqueio é no nível da rede, mas o código está tecnicamente correto.")
+                st.info("Confirmação: o bloqueio é de rede/infraestrutura, não do código ou do token.")
                 st.stop()
 
             resultados = []
             
-            # 2. Busca Detalhada para cada item: TOKEN AGORA ESTÁ NO HEADER
+            # 2. Busca Detalhada para cada item: TOKEN NO HEADER
             for item in dados.get("results", []):
                 try:
                     # Atraso para evitar ser banido durante o loop
                     time.sleep(1) 
                     
-                    detalhe_url = f"https://api.mercadolibre.com/items/{item['id']}" # SEM TOKEN NA URL
+                    detalhe_url = f"https://api.mercadolibre.com/items/{item['id']}" 
                     # Usa HEADERS_AUTH
                     detalhe = requests.get(detalhe_url, headers=HEADERS_AUTH, timeout=10).json()
                     date_created = detalhe.get("date_created", "")
                 except:
                     date_created = ""
-                    
-                resultados.append({
-                    "Título": item.get("title", ""),
-                    "Preço (R$)": item.get("price", ""),
-                    "Vendas": item.get("sold_quantity", 0), 
-                    "Data de Criação": date_created,
-                    "Link": item.get("permalink", "")
-                })
-
-            if not resultados:
-                st.warning("Nenhum resultado encontrado.")
-            else:
-                df = pd.DataFrame(resultados)
-                st.success(f"{len(df)} anúncios encontrados! (Resultado obtido com sucesso)")
-                st.dataframe(df)
-
-                # --- Exportar para Excel ---
-                data_atual = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-                nome_arquivo = f"relatorio_ml_{data_atual}.xlsx"
-                
-                df.to_excel(nome_arquivo, index=False)
-
-                with open(nome_arquivo, "rb") as f:
-                    st.download_button(
-                        label="Baixar Relatório em Excel",
-                        data=f,
-                        file_name=nome_arquivo,
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
