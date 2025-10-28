@@ -1,110 +1,193 @@
-import streamlit as st
 import requests
 import pandas as pd
-from datetime import datetime
 from urllib.parse import quote_plus
-import time
 
-# --- AUTENTICAÇÃO DO MERCADO LIVRE (TOKEN DE AUTORIZAÇÃO DE USUÁRIO) ---
-# Token final gerado via fluxo OAuth 2.0 (Validade: 6 horas)
-ACCESS_TOKEN = "APP_USR-7045413899514788-102723-bda1d9cea748a531bea586d432e80011-1965939634" 
-# O Refresh Token para renovar este token é: TG-6900398156307e000110d472-1965939634
-# ----------------------------------------------------------------------
+# A URL base do Mercado Livre. O endpoint /search que você está usando é público (não requer token)
+ML_API_BASE = "https://api.mercadolibre.com"
+ML_SITE = "MLB" # Para Mercado Livre Brasil
 
-# Configuração de Headers BASE: Simulação de navegador
-HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36'
-}
+class MercadoLivreSearcher:
+    """
+    Classe para encapsular a lógica de busca, filtragem e ordenação de produtos
+    no Mercado Livre, replicando a funcionalidade do código VBA.
+    """
+    
+    def __init__(self, access_token=None):
+        """
+        Inicializa o objeto. Um access_token pode ser incluído para 
+        futuras requisições autenticadas (como em /items para alguns detalhes).
+        """
+        self.headers = {
+            'Authorization': f'Bearer {access_token}' if access_token else '',
+            'Content-Type': 'application/json'
+        }
+        
+    def _fetch_page(self, query: str, offset: int = 0) -> dict:
+        """Faz a chamada à API do Mercado Livre para uma página específica."""
+        # Codifica a query para ser segura na URL (substitui ' ' por '+')
+        safe_query = quote_plus(query)
+        
+        url = f"{ML_API_BASE}/sites/{ML_SITE}/search?q={safe_query}&offset={offset}"
+        
+        try:
+            response = requests.get(url, headers=self.headers, timeout=10)
+            response.raise_for_status() # Levanta exceção para erros HTTP (4xx ou 5xx)
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            print(f"Erro na requisição à API do Mercado Livre: {e}")
+            return None
 
-# --- HEADER DE AUTORIZAÇÃO OBRIGATÓRIO (Recomendação do ML) ---
-# Adiciona o token no cabeçalho.
-HEADERS_AUTH = HEADERS.copy()
-HEADERS_AUTH['Authorization'] = f'Bearer {ACCESS_TOKEN}'
-# -------------------------------------------------------------
+    def search(self, query: str, limit: int, sort_type: str) -> pd.DataFrame:
+        """
+        Realiza a busca principal e retorna o top N de resultados ordenados.
 
-st.set_page_config(page_title="Relatório Mercado Livre", layout="centered")
+        Args:
+            query (str): O termo de busca.
+            limit (int): O número de resultados desejados (N).
+            sort_type (str): O critério de ordenação ('price' para menor preço, 
+                             'sold_quantity' para maior venda).
 
-st.title("📊 Consulta de Produtos no Mercado Livre")
-st.info("Utilizando o Token de Autorização de Usuário. Se o erro 403 persistir, o bloqueio é 100% de infraestrutura (IP/Rede).")
-
-# --- Entrada do usuário ---
-termo = st.text_input("Digite o termo de busca", "lâmpada LED")
-limite = st.slider("Quantidade de resultados", 10, 200, 20)
-ordenar = st.selectbox(
-    "Ordenar por:",
-    ("Mais vendidos (decrescente)", "Menor preço", "Maior preço")
-)
-
-sort_map = {
-    "Mais vendidos (decrescente)": "sold_quantity_desc",
-    "Menor preço": "price_asc",
-    "Maior preço": "price_desc"
-}
-sort_param = sort_map[ordenar]
-
-# --- Botão de busca ---
-if st.button("Buscar anúncios"):
-    if not termo.strip():
-        st.error("Digite um termo de busca válido.")
-    else:
-        with st.spinner("Buscando anúncios..."):
-            # Codifica o termo de busca para ser seguro em URL
-            q = quote_plus(termo)
+        Returns:
+            pd.DataFrame: Um DataFrame com os resultados ordenados (Top N).
+        """
+        
+        all_results = []
+        offset = 0
+        MAX_RESULTS_ML = 1000 # O limite de 1000 resultados do VBA
+        
+        print(f"Buscando '{query}' - Top {limit} por {sort_type}...")
+        
+        while offset < MAX_RESULTS_ML and offset < limit + 500: # Adicionando um buffer para o limite
+            data = self._fetch_page(query, offset)
             
-            # 1. Busca Principal: TOKEN NO HEADER
-            url_search = f"https://api.mercadolibre.com/sites/MLB/search?q={q}&limit={limite}&sort={sort_param}"
+            if data is None:
+                break
+
+            total_items = data['paging'].get('total', 0)
             
-            try:
-                # Usa HEADERS_AUTH
-                res = requests.get(url_search, headers=HEADERS_AUTH, timeout=15)
-                res.raise_for_status() 
-                dados = res.json()
-            except Exception as e:
-                # O erro 403 aqui é de bloqueio de ambiente/rede.
-                st.error(f"Erro ao acessar a API: {e}")
-                st.warning("Confirmação: o bloqueio é de rede/infraestrutura, não do código ou do token.")
-                st.stop()
+            # O VBA faz a busca em múltiplos requests com offset. A API do ML retorna 50 por página
+            if not data.get('results'):
+                break
 
-            resultados = []
+            all_results.extend(data['results'])
             
-            # 2. Busca Detalhada para cada item: TOKEN NO HEADER
-            for item in dados.get("results", []):
-                try:
-                    # Atraso para evitar ser banido durante o loop
-                    time.sleep(1) 
-                    
-                    detalhe_url = f"https://api.mercadolibre.com/items/{item['id']}" 
-                    # Usa HEADERS_AUTH
-                    detalhe = requests.get(detalhe_url, headers=HEADERS_AUTH, timeout=10).json()
-                    date_created = detalhe.get("date_created", "")
-                except:
-                    date_created = ""
-                    
-                resultados.append({
-                    "Título": item.get("title", ""),
-                    "Preço (R$)": item.get("price", ""),
-                    "Vendas": item.get("sold_quantity", 0), 
-                    "Data de Criação": date_created,
-                    "Link": item.get("permalink", "")
-                })
-
-            if not resultados:
-                st.warning("Nenhum resultado encontrado.")
-            else:
-                df = pd.DataFrame(resultados)
-                st.success(f"{len(df)} anúncios encontrados!")
-                st.dataframe(df)
-
-                # --- Exportar para Excel ---
-                data_atual = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-                nome_arquivo = f"relatorio_ml_{data_atual}.xlsx"
+            # Determina o próximo offset para a paginação
+            offset += len(data['results'])
+            
+            # Sai do loop se atingiu o limite de resultados ou o total disponível
+            if offset >= total_items or offset >= MAX_RESULTS_ML:
+                break
                 
-                df.to_excel(nome_arquivo, index=False)
+            # Limita as requisições se já tivermos resultados suficientes para N
+            # Este é um refinamento para não buscar as 1000 páginas se N for pequeno
+            if offset >= limit and len(all_results) >= limit * 2 and offset < MAX_RESULTS_ML - 50:
+                 # Se já temos o dobro do 'limit' e estamos longe do MAX_RESULTS_ML, podemos parar.
+                 # O código VBA continua buscando até 1000 para achar os melhores. Vamos seguir essa lógica.
+                 # A forma mais performática é buscar tudo e ordenar, como faremos abaixo.
+                 pass
 
-                with open(nome_arquivo, "rb") as f:
-                    st.download_button(
-                        label="Baixar Relatório em Excel",
-                        data=f,
-                        file_name=nome_arquivo,
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
+        # === Processamento dos Dados ===
+
+        if not all_results:
+            print("Nenhum resultado encontrado.")
+            return pd.DataFrame()
+
+        # Converte a lista de dicionários para um DataFrame do pandas
+        df = pd.DataFrame(all_results)
+        
+        # 1. Limpeza e Filtragem (Similar ao 'If JsonPROD("results")(i)("condition") <> "new" Then...')
+        # Filtra apenas itens novos
+        df_filtered = df[df['condition'] == 'new'].copy()
+        
+        if df_filtered.empty:
+            print("Nenhum produto novo encontrado.")
+            return pd.DataFrame()
+        
+        # 2. Seleção de Colunas e Tratamento
+        
+        # Colunas relevantes
+        if sort_type == 'price':
+            cols = ['id', 'title', 'price', 'permalink', 'thumbnail']
+            df_final = df_filtered[cols]
+            sort_order = True # Preço: Crescente (Menor preço)
+        else: # sort_type == 'sold_quantity'
+            cols = ['id', 'title', 'sold_quantity', 'permalink']
+            df_final = df_filtered[cols]
+            sort_order = False # Venda: Decrescente (Maior venda)
+            
+        # Limpeza do ID (Similar ao 'Replace(interm, "MLB", "")')
+        df_final.loc[:, 'id'] = df_final['id'].str.replace('MLB', '')
+        
+        # 3. Ordenação (Substitui o Bubble Sort do VBA)
+        # O Pandas ordena a lista inteira de forma muito mais eficiente
+        df_sorted = df_final.sort_values(by=sort_type, ascending=sort_order)
+
+        # 4. Retorna o Top N
+        # O .head(limit) substitui toda a lógica de reordenação no loop do VBA
+        return df_sorted.head(limit)
+
+# --- Exemplo de Uso/Deploy ---
+if __name__ == '__main__':
+    # Usando suas "últimas credenciais válidas"
+    # Se você está usando um endpoint que requer autenticação, coloque seu Access Token aqui.
+    # Exemplo: access_token = "SEU_ACCESS_TOKEN_AQUI"
+    # Para o search público, deixamos como None.
+    ACCESS_TOKEN = None 
+
+    # Simulação da leitura dos inputs do Excel (C4 e D4/J4)
+    QUERY_MENOR_PRECO = "iphone 13 pro max"
+    LIMIT_MENOR_PRECO = 10 
+
+    QUERY_MAIOR_VENDA = "máquina de lavar roupa"
+    LIMIT_MAIOR_VENDA = 5 
+    
+    # ---------------------------------------------
+    # Exemplo 1: Menor Preço (Similar ao getJSON_ML_Menorpreco)
+    # ---------------------------------------------
+    searcher = MercadoLivreSearcher(access_token=ACCESS_TOKEN)
+    
+    top_menor_preco = searcher.search(
+        query=QUERY_MENOR_PRECO, 
+        limit=LIMIT_MENOR_PRECO, 
+        sort_type='price'
+    )
+    
+    print("\n--- Resultados (Menor Preço) ---")
+    if not top_menor_preco.empty:
+        # Renomeando as colunas para simular o output do VBA: ID, Link, Preço, Título
+        top_menor_preco.rename(columns={
+            'id': 'ID_MLB',
+            'permalink': 'Link',
+            'price': 'Preço',
+            'title': 'Título'
+        }, inplace=True)
+        # Selecionando colunas na ordem desejada para o output
+        output_cols = ['ID_MLB', 'Link', 'Preço', 'Título', 'thumbnail']
+        print(top_menor_preco[output_cols])
+        
+        # Se você estivesse integrando com o Excel, usaria uma biblioteca 
+        # como openpyxl ou pandas.to_excel para escrever esses dados
+        # no arquivo, simulando o Range("E" & i + 3) = ...
+
+    # ---------------------------------------------
+    # Exemplo 2: Maior Venda (Similar ao getJSON_ML_Maiorvenda)
+    # ---------------------------------------------
+    
+    top_maior_venda = searcher.search(
+        query=QUERY_MAIOR_VENDA, 
+        limit=LIMIT_MAIOR_VENDA, 
+        sort_type='sold_quantity'
+    )
+    
+    print("\n--- Resultados (Maior Venda) ---")
+    if not top_maior_venda.empty:
+        # Renomeando as colunas para simular o output do VBA: ID, Link, Quantidade, Título
+        top_maior_venda.rename(columns={
+            'id': 'ID_MLB',
+            'permalink': 'Link',
+            'sold_quantity': 'Vendas',
+            'title': 'Título'
+        }, inplace=True)
+        # Selecionando colunas na ordem desejada para o output
+        output_cols = ['ID_MLB', 'Link', 'Vendas', 'Título']
+        print(top_maior_venda[output_cols])
